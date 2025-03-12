@@ -1064,6 +1064,24 @@ sai_status_t Meta::queryStatsCapability(
     return status;
 }
 
+sai_status_t Meta::queryStatsStCapability(
+    _In_ sai_object_id_t switchId,
+    _In_ sai_object_type_t objectType,
+    _Inout_ sai_stat_st_capability_list_t *stats_capability)
+{
+    SWSS_LOG_ENTER();
+
+    auto status = meta_validate_query_stats_capability(objectType, switchId);
+
+    CHECK_STATUS_SUCCESS(status);
+
+    status = m_implementation->queryStatsStCapability(switchId, objectType, stats_capability);
+
+    // no post validation required
+
+    return status;
+}
+
 sai_status_t Meta::getStatsExt(
         _In_ sai_object_type_t object_type,
         _In_ sai_object_id_t object_id,
