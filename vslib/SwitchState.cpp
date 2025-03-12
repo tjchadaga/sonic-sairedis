@@ -399,7 +399,7 @@ sai_status_t SwitchState::queryStatsStCapability(
 {
     SWSS_LOG_ENTER();
 
-    return SAI_STATUS_SUCCESS;
+    return SAI_STATUS_NOT_IMPLEMENTED;
 }
 
 std::shared_ptr<saimeta::Meta> SwitchState::getMeta()
