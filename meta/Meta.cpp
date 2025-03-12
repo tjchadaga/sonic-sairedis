@@ -1071,15 +1071,7 @@ sai_status_t Meta::queryStatsStCapability(
 {
     SWSS_LOG_ENTER();
 
-    auto status = meta_validate_query_stats_capability(objectType, switchId);
-
-    CHECK_STATUS_SUCCESS(status);
-
-    status = m_implementation->queryStatsStCapability(switchId, objectType, stats_capability);
-
-    // no post validation required
-
-    return status;
+    return SAI_STATUS_NOT_IMPLEMENTED;
 }
 
 sai_status_t Meta::getStatsExt(
