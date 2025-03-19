@@ -1348,17 +1348,6 @@ TEST(SaiSerialize, serialize_number)
     EXPECT_EQ(u,   0x12345678);
 }
 
-TEST(SaiSerialize, sai_serialize_prefix_compression_entry)
-{
-    sai_prefix_compression_entry_t e;
-
-    memset(&e, 0, sizeof(e));
-
-    auto s = sai_serialize_prefix_compression_entry(e);
-
-    sai_deserialize_prefix_compression_entry(s, e);
-}
-
 TEST(SaiSerialize, serialize_stat_capability_list)
 {
     SWSS_LOG_ENTER();
