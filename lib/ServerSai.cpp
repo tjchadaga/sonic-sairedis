@@ -289,9 +289,14 @@ sai_status_t ServerSai::queryStatsStCapability(
     _In_ sai_object_type_t objectType,
     _Inout_ sai_stat_st_capability_list_t *stats_capability)
 {
+    MUTEX();
     SWSS_LOG_ENTER();
+    REDIS_CHECK_API_INITIALIZED();
 
-    return SAI_STATUS_NOT_IMPLEMENTED;
+    return m_sai->queryStatsStCapability(
+        switchId,
+        objectType,
+        stats_capability);
 }
 
 sai_status_t ServerSai::getStatsExt(
