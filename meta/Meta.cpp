@@ -7040,7 +7040,6 @@ void Meta::meta_sai_on_tam_tel_type_config_change(_In_ sai_object_id_t m_tam_id)
                 sai_serialize_object_type(ot).c_str());
         return;
     }
-    
 
     if (valid && !m_oids.objectReferenceExists(m_tam_id))
     {
