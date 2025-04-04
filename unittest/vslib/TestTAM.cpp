@@ -15,6 +15,7 @@ static void notify_tam_tel_type_config_change(
         _In_ sai_object_id_t tam_tel_type_id)
 {
     SWSS_LOG_ENTER();
+
     notified_tam_tel_type_id = tam_tel_type_id;
 }
 
