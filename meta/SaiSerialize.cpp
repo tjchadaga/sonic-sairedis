@@ -482,6 +482,22 @@ sai_status_t transfer_attribute(
             transfer_primitive(src_attr.value.rx_state, dst_attr.value.rx_state);
             break;
 
+        case SAI_ATTR_VALUE_TYPE_PRBS_PER_LANE_RX_STATUS_LIST:
+            RETURN_ON_ERROR(transfer_list(src_attr.value.prbs_rx_status_list, dst_attr.value.prbs_rx_status_list, countOnly));
+            break;
+
+        case SAI_ATTR_VALUE_TYPE_PRBS_PER_LANE_RX_STATE_LIST:
+            RETURN_ON_ERROR(transfer_list(src_attr.value.prbs_rx_state_list, dst_attr.value.prbs_rx_state_list, countOnly));
+            break;
+
+        case SAI_ATTR_VALUE_TYPE_PRBS_BIT_ERROR_RATE:
+            transfer_primitive(src_attr.value.prbs_ber, dst_attr.value.prbs_ber);
+            break;
+
+        case SAI_ATTR_VALUE_TYPE_PRBS_PER_LANE_BIT_ERROR_RATE_LIST:
+            RETURN_ON_ERROR(transfer_list(src_attr.value.prbs_ber_list, dst_attr.value.prbs_ber_list, countOnly));
+            break;
+
         case SAI_ATTR_VALUE_TYPE_MAP_LIST:
             RETURN_ON_ERROR(transfer_list(src_attr.value.maplist, dst_attr.value.maplist, countOnly));
             break;
