@@ -5808,7 +5808,7 @@ void sai_deserialize_free_attribute_value(
             sai_free_list(attr.value.s32list);
             break;
 
-        case SAI_ATTR_VALUE_TYPE_UINT16_RANGE:           
+        case SAI_ATTR_VALUE_TYPE_UINT16_RANGE:
         case SAI_ATTR_VALUE_TYPE_UINT32_RANGE:
         case SAI_ATTR_VALUE_TYPE_INT32_RANGE:
             break;
