@@ -5445,6 +5445,8 @@ sai_status_t Meta::meta_validate_firmware(
         const sai_attribute_value_t& value,
         bool validateState)
 {
+    SWSS_LOG_ENTER();
+
     const sai_fw_inst_t* instances = &value.fwinst;
     uint32_t count = 1;
     if (md.attrvaluetype == SAI_ATTR_VALUE_TYPE_FW_LIST)

@@ -74,6 +74,8 @@ void sai_free_list(
 
 static void sai_free_fw_inst(sai_fw_inst_t& fw)
 {
+    SWSS_LOG_ENTER();
+
     sai_free_list(fw.fw_path_name);
     sai_free_list(fw.log_path_name);
     sai_free_list(fw.fw_opaque_id);
@@ -81,6 +83,8 @@ static void sai_free_fw_inst(sai_fw_inst_t& fw)
 
 static void sai_free_fw_list(sai_fw_list_t& list)
 {
+    SWSS_LOG_ENTER();
+
     if (list.list)
         for (uint32_t i = 0; i < list.count; ++i)
             sai_free_fw_inst(list.list[i]);
@@ -230,6 +234,8 @@ static sai_status_t transfer_fw_inst(
         sai_fw_inst_t& dst,
         bool countOnly)
 {
+    SWSS_LOG_ENTER();
+
     dst.core_id = src.core_id;
     dst.admin_state = src.admin_state;
 
@@ -247,6 +253,8 @@ static sai_status_t transfer_fw_list(
         sai_fw_list_t& dst,
         bool countOnly)
 {
+    SWSS_LOG_ENTER();
+
     if (countOnly || dst.count == 0)
     {
         dst.count = src.count;
@@ -1993,6 +2001,8 @@ std::string sai_serialize_port_ilt_lane_training_status_list(
 
 static json sai_serialize_fw_inst(const sai_fw_inst_t& fw, bool countOnly)
 {
+    SWSS_LOG_ENTER();
+
     return {
         {"fw_path_name", sai_serialize_number_list(fw.fw_path_name, countOnly)},
         {"log_path_name", sai_serialize_number_list(fw.log_path_name, countOnly)},
@@ -2004,6 +2014,8 @@ static json sai_serialize_fw_inst(const sai_fw_inst_t& fw, bool countOnly)
 
 static std::string sai_serialize_fw_list(const sai_fw_list_t& list, bool countOnly)
 {
+    SWSS_LOG_ENTER();
+
     if (countOnly)
         return sai_serialize_number(list.count);
 
@@ -4118,6 +4130,8 @@ void sai_deserialize_number_list(
 
 static void sai_deserialize_fw_inst(const json& j, sai_fw_inst_t& fw, bool countOnly)
 {
+    SWSS_LOG_ENTER();
+
     auto deleter = [](sai_fw_inst_t* p) { sai_free_fw_inst(*p); delete p; };
     std::unique_ptr<sai_fw_inst_t, decltype(deleter)> value(new sai_fw_inst_t{}, deleter);
     sai_deserialize_number(j.at("core_id").get<std::string>(), value->core_id);
@@ -4133,6 +4147,8 @@ static void sai_deserialize_fw_inst(const json& j, sai_fw_inst_t& fw, bool count
 
 static void sai_deserialize_fw_list(const std::string& s, sai_fw_list_t& list, bool countOnly)
 {
+    SWSS_LOG_ENTER();
+
     if (countOnly)
     {
         list.list = nullptr;
