@@ -2039,6 +2039,8 @@ void Meta::meta_generic_validation_post_remove(
             case SAI_ATTR_VALUE_TYPE_PORT_ILT_LANE_TRAINING_STATUS_LIST:
             case SAI_ATTR_VALUE_TYPE_PORT_SNR_LIST:
             case SAI_ATTR_VALUE_TYPE_TAPS_LIST:
+            case SAI_ATTR_VALUE_TYPE_FW_INST:
+            case SAI_ATTR_VALUE_TYPE_FW_LIST:
                 // no special action required
                 break;
 
@@ -3840,6 +3842,14 @@ sai_status_t Meta::meta_generic_validation_create(
                 VALIDATION_LIST(md, value.portserdestaps);
                 break;
 
+            case SAI_ATTR_VALUE_TYPE_FW_INST:
+            case SAI_ATTR_VALUE_TYPE_FW_LIST:
+                {
+                    auto fwStatus = meta_validate_firmware(md, value, true);
+                    CHECK_STATUS_SUCCESS(fwStatus);
+                    break;
+                }
+
             default:
 
                 META_LOG_THROW(md, "serialization type is not supported yet FIXME");
@@ -4497,6 +4507,14 @@ sai_status_t Meta::meta_generic_validation_set(
             VALIDATION_LIST(md, value.portserdestaps);
             break;
 
+        case SAI_ATTR_VALUE_TYPE_FW_INST:
+        case SAI_ATTR_VALUE_TYPE_FW_LIST:
+            {
+                auto fwStatus = meta_validate_firmware(md, value, true);
+                CHECK_STATUS_SUCCESS(fwStatus);
+                break;
+            }
+
         default:
 
             META_LOG_THROW(md, "serialization type is not supported yet FIXME");
@@ -4911,6 +4929,14 @@ sai_status_t Meta::meta_generic_validation_get(
                 VALIDATION_LIST(md, value.portserdestaps);
                 break;
 
+            case SAI_ATTR_VALUE_TYPE_FW_INST:
+            case SAI_ATTR_VALUE_TYPE_FW_LIST:
+                {
+                    auto fwStatus = meta_validate_firmware(md, value, false);
+                    CHECK_STATUS_SUCCESS(fwStatus);
+                    break;
+                }
+
             default:
 
                 // acl capability will is more complex since is in/out we need to check stage
@@ -5233,6 +5259,11 @@ void Meta::meta_generic_validation_post_get(
                 VALIDATION_LIST_GET(md, value.portserdestaps);
                 break;
 
+            case SAI_ATTR_VALUE_TYPE_FW_INST:
+            case SAI_ATTR_VALUE_TYPE_FW_LIST:
+                meta_validate_firmware(md, value, true);
+                break;
+
             default:
 
                 META_LOG_THROW(md, "serialization type is not supported yet FIXME");
@@ -5406,6 +5437,36 @@ sai_status_t Meta::meta_generic_validation_objlist(
         object_type = ot;
     }
 
+    return SAI_STATUS_SUCCESS;
+}
+
+sai_status_t Meta::meta_validate_firmware(
+        const sai_attr_metadata_t& md,
+        const sai_attribute_value_t& value,
+        bool validateState)
+{
+    const sai_fw_inst_t* instances = &value.fwinst;
+    uint32_t count = 1;
+    if (md.attrvaluetype == SAI_ATTR_VALUE_TYPE_FW_LIST)
+    {
+        VALIDATION_LIST(md, value.fwlist);
+        instances = value.fwlist.list;
+        count = value.fwlist.count;
+    }
+
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const auto& fw = instances[i];
+        VALIDATION_LIST(md, fw.fw_path_name);
+        VALIDATION_LIST(md, fw.log_path_name);
+        VALIDATION_LIST(md, fw.fw_opaque_id);
+        if (validateState && !sai_metadata_get_enum_value_name(
+                    &sai_metadata_enum_sai_fw_admin_state_t, fw.admin_state))
+        {
+            META_LOG_ERROR(md, "invalid firmware admin state %d", fw.admin_state);
+            return SAI_STATUS_INVALID_PARAMETER;
+        }
+    }
     return SAI_STATUS_SUCCESS;
 }
 
@@ -6132,6 +6193,8 @@ void Meta::meta_generic_validation_post_create(
                 break;
 
             case SAI_ATTR_VALUE_TYPE_IP_PREFIX_LIST:
+            case SAI_ATTR_VALUE_TYPE_FW_INST:
+            case SAI_ATTR_VALUE_TYPE_FW_LIST:
                 // no special action required
                 break;
 
@@ -6382,6 +6445,8 @@ void Meta::meta_generic_validation_post_set(
             break;
 
         case SAI_ATTR_VALUE_TYPE_IP_PREFIX_LIST:
+        case SAI_ATTR_VALUE_TYPE_FW_INST:
+        case SAI_ATTR_VALUE_TYPE_FW_LIST:
             // no special action required
             break;
 
