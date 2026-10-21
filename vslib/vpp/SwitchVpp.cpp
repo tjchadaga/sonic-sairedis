@@ -789,6 +789,123 @@ void SwitchVpp::setPortStats(
     debugSetStats(oid, stats);
 }
 
+sai_status_t SwitchVpp::queryRifStats(
+        _In_ const std::string& ifname,
+        _Out_ std::map<sai_stat_id_t, uint64_t>& stats)
+{
+    SWSS_LOG_ENTER();
+
+    vpp_interface_stats_t rif_stats;
+    if (vpp_intf_stats_query(ifname.c_str(), &rif_stats) != 0)
+    {
+        SWSS_LOG_ERROR("Failed to query RIF counters for %s", ifname.c_str());
+        return SAI_STATUS_FAILURE;
+    }
+
+    stats = {
+        {SAI_ROUTER_INTERFACE_STAT_IN_OCTETS, rif_stats.rx_bytes},
+        {SAI_ROUTER_INTERFACE_STAT_IN_PACKETS, rif_stats.rx},
+        {SAI_ROUTER_INTERFACE_STAT_OUT_OCTETS, rif_stats.tx_bytes},
+        {SAI_ROUTER_INTERFACE_STAT_OUT_PACKETS, rif_stats.tx},
+        {SAI_ROUTER_INTERFACE_STAT_IN_ERROR_PACKETS, rif_stats.rx_error},
+        {SAI_ROUTER_INTERFACE_STAT_OUT_ERROR_PACKETS, rif_stats.tx_error},
+    };
+    return SAI_STATUS_SUCCESS;
+}
+
+sai_status_t SwitchVpp::initializeRifStats(
+        _In_ sai_object_id_t oid)
+{
+    SWSS_LOG_ENTER();
+
+    const std::string ifname = m_ifaceRegistry.resolveHwIfByRifOid(oid);
+    if (ifname.empty())
+    {
+        return SAI_STATUS_SUCCESS;
+    }
+
+    std::map<sai_stat_id_t, uint64_t> stats;
+    CHECK_STATUS(queryRifStats(ifname, stats));
+    m_rifStatsBaseMap[oid] = std::move(stats);
+    return SAI_STATUS_SUCCESS;
+}
+
+sai_status_t SwitchVpp::getRifStatsExt(
+        _In_ sai_object_id_t oid,
+        _In_ uint32_t number_of_counters,
+        _In_ const sai_stat_id_t *counter_ids,
+        _In_ sai_stats_mode_t mode,
+        _Out_ uint64_t *counters)
+{
+    SWSS_LOG_ENTER();
+
+    // Absolute cumulative counters as VPP reports them, keyed by SAI stat id.
+    std::map<sai_stat_id_t, uint64_t> absolute;
+
+    std::string if_name = m_ifaceRegistry.resolveHwIfByRifOid(oid);
+    if (if_name.empty())
+    {
+        // RIF types without a backing VPP interface have no hardware counters.
+        SWSS_LOG_WARN("getRifStatsExt: no VPP stats for RIF %s",
+                sai_serialize_object_id(oid).c_str());
+
+        for (uint32_t i = 0; i < number_of_counters; ++i)
+        {
+            counters[i] = 0;
+        }
+
+        return SAI_STATUS_SUCCESS;
+    }
+
+    CHECK_STATUS(queryRifStats(if_name, absolute));
+
+    bool clear = mode == SAI_STATS_MODE_READ_AND_CLEAR ||
+        mode == SAI_STATS_MODE_BULK_READ_AND_CLEAR ||
+        mode == SAI_STATS_MODE_BULK_CLEAR;
+
+    // VPP exposes only ever-increasing absolute counters, so a SAI
+    // READ_AND_CLEAR is emulated by remembering the absolute value at the last
+    // clear and returning (absolute - baseline). Without this the base
+    // VirtualSwitch clear zeroes its own map but the next read reloads VPP's
+    // absolute value, restoring all pre-clear traffic.
+    auto& base = m_rifStatsBaseMap[oid];
+
+    for (uint32_t i = 0; i < number_of_counters; ++i)
+    {
+        sai_stat_id_t id = counter_ids[i];
+
+        uint64_t abs = 0;
+        auto it = absolute.find(id);
+        if (it != absolute.end())
+        {
+            abs = it->second;
+        }
+
+        uint64_t baseline = 0;
+        auto baseIt = base.find(id);
+        if (baseIt != base.end())
+        {
+            baseline = baseIt->second;
+        }
+
+        if (abs < baseline)
+        {
+            SWSS_LOG_WARN("RIF %s counter %d reset; discarding baseline",
+                    sai_serialize_object_id(oid).c_str(), id);
+            base.erase(id);
+            baseline = 0;
+        }
+        counters[i] = abs - baseline;
+
+        if (clear)
+        {
+            base[id] = abs;
+        }
+    }
+
+    return SAI_STATUS_SUCCESS;
+}
+
 sai_status_t SwitchVpp::getRouteCounterStats(
         _In_ sai_object_id_t oid,
         _Out_ std::map<sai_stat_id_t, uint64_t>& stats,
@@ -1098,11 +1215,16 @@ sai_status_t SwitchVpp::queryAttributeCapability(
     // TODO: We should generate this metadata for the virtual switch rather
     // than hard-coding it here.
 
-    // in virtual switch by default all apis are implemented for all objects. SUCCESS for all attributes
+    bool implemented = true;
+    if (object_type == SAI_OBJECT_TYPE_ROUTER_INTERFACE &&
+            attr_id == SAI_ROUTER_INTERFACE_ATTR_LOOPBACK_PACKET_ACTION)
+    {
+        CHECK_STATUS(sonicExtFeatureEnabled("iface-loopback", implemented));
+    }
 
-    capability->create_implemented = true;
-    capability->set_implemented    = true;
-    capability->get_implemented    = true;
+    capability->create_implemented = implemented;
+    capability->set_implemented    = implemented;
+    capability->get_implemented    = implemented;
 
     return SAI_STATUS_SUCCESS;
 }
@@ -1172,6 +1294,17 @@ sai_status_t SwitchVpp::getStatsExt(
     if (object_type == SAI_OBJECT_TYPE_POLICER)
     {
         return getPolicerStats(object_id, number_of_counters, counter_ids, counters);
+    }
+
+    if (object_type == SAI_OBJECT_TYPE_ROUTER_INTERFACE)
+    {
+        auto meta = m_meta.lock();
+        if (meta && meta->meta_unittests_enabled())
+        {
+            return SwitchStateBase::getStatsExt(
+                    object_type, object_id, number_of_counters, counter_ids, mode, counters);
+        }
+        return getRifStatsExt(object_id, number_of_counters, counter_ids, mode, counters);
     }
 
     return SwitchStateBase::getStatsExt(

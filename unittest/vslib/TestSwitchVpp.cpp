@@ -1,157 +1,21 @@
-#include "vpp/SwitchVpp.h"
-
+#include "MockVppXlate.h"
+#include "vpp/vppxlate/SaiIntfStats.h"
+#include "ContextConfigContainer.h"
+#include "meta/DummySaiInterface.h"
+#include "meta/Meta.h"
 #include "meta/sai_serialize.h"
+#include "saivs.h"
 
 #include <gtest/gtest.h>
 
 #include <map>
 #include <memory>
 #include <string>
+#include <set>
 #include <vector>
+#include <unistd.h>
 
 using namespace saivs;
-
-/*
- * Recording stubs for the VPP API. The unit test build links the test binary
- * with the linker's --wrap option for each of them, so SwitchVpp calls land
- * here instead of on a VPP socket.
- */
-namespace
-{
-    struct VppCall
-    {
-        std::string api;
-        std::string name;   // interface
-        uint32_t id;        // VLAN or bridge domain
-        uint32_t sub_id;    // return value
-        bool flag;          // is_up or is_add
-    };
-
-    std::vector<VppCall> g_vppCalls;
-
-    /*
-     * Admin state VPP holds for each interface, by name. An interface that is
-     * missing is admin down, which is how VPP creates both ports and
-     * sub-interfaces.
-     */
-    std::map<std::string, bool> g_vppAdminUp;
-
-    bool vppAdminUp(
-            const std::string& hwif)
-    {
-        SWSS_LOG_ENTER();
-
-        auto it = g_vppAdminUp.find(hwif);
-
-        return it != g_vppAdminUp.end() && it->second;
-    }
-
-    std::vector<VppCall> vppCallsTo(
-            const std::string& api,
-            const std::string& name)
-    {
-        SWSS_LOG_ENTER();
-
-        std::vector<VppCall> calls;
-
-        for (auto& call: g_vppCalls)
-        {
-            if (call.api == api && call.name == name)
-            {
-                calls.push_back(call);
-            }
-        }
-
-        return calls;
-    }
-}
-
-extern "C" {
-
-int __wrap_init_vpp_client() { return 0; }
-int __wrap_vpp_sync_for_events() { return 0; }
-vpp_event_info_t * __wrap_vpp_ev_dequeue() { return NULL; }
-int __wrap_vpp_want_l2_macs_events2(bool enable, vpp_mac_event_cb_fn cb, void *ctx) { return 0; }
-int __wrap_refresh_interfaces_list() { return 0; }
-
-/*
- * VPP's vnet_sw_interface_set_flags() refuses admin up on a sub-interface whose
- * parent ("super-interface") is admin down, and sw_interface_set_flags returns
- * -1 for it. Admin down is always accepted.
- */
-int __wrap_interface_set_state(const char *hwif_name, bool is_up)
-{
-    SWSS_LOG_ENTER();
-
-    std::string name = hwif_name ? hwif_name : "";
-
-    int ret = 0;
-
-    auto dot = name.rfind('.');
-
-    if (is_up && dot != std::string::npos && !vppAdminUp(name.substr(0, dot)))
-    {
-        ret = -1;
-    }
-    else
-    {
-        g_vppAdminUp[name] = is_up;
-    }
-
-    g_vppCalls.push_back({"interface_set_state", name, 0, (uint32_t)ret, is_up});
-    return ret;
-}
-
-int __wrap_interface_set_promiscuous(const char *hwif_name, bool enable) { return 0; }
-
-int __wrap_create_sub_interface(const char *hwif_name, uint32_t sub_id, uint16_t vlan_id)
-{
-    SWSS_LOG_ENTER();
-
-    g_vppCalls.push_back({"create_sub_interface", hwif_name ? hwif_name : "", vlan_id, sub_id, true});
-    return 0;
-}
-
-int __wrap_delete_sub_interface(const char *hwif_name, uint32_t sub_id)
-{
-    SWSS_LOG_ENTER();
-
-    std::string parent = hwif_name ? hwif_name : "";
-
-    g_vppAdminUp.erase(parent + "." + std::to_string(sub_id));
-    g_vppCalls.push_back({"delete_sub_interface", parent, sub_id, sub_id, false});
-    return 0;
-}
-
-int __wrap_set_sw_interface_l2_bridge(const char *hwif_name, uint32_t bridge_id, bool l2_enable, uint32_t port_type) { return 0; }
-int __wrap_set_l2_interface_vlan_tag_rewrite(const char *hwif_name, uint32_t tag1, uint32_t tag2, uint32_t push_dot1q, uint32_t vtr_op) { return 0; }
-int __wrap_set_bridge_domain_flags(uint32_t bd_id, vpp_bd_flags_t flag, bool enable) { return 0; }
-
-int __wrap_bridge_domain_get_member_count(uint32_t bd_id, uint32_t *member_count)
-{
-    SWSS_LOG_ENTER();
-
-    *member_count = 0;
-    return 0;
-}
-
-int __wrap_vpp_bridge_domain_add_del(uint32_t bridge_id, bool is_add) { return 0; }
-uint32_t __wrap_vpp_get_swif_idx_by_name(const char *hwif_name)
-{
-    SWSS_LOG_ENTER();
-
-    static uint32_t nextSwIfIndex = 200;
-
-    return nextSwIfIndex++;
-}
-
-// no classify punt in these tests: its one-time setup fails, which the VLAN member path tolerates
-int __wrap_vpp_add_node_next(const char *node_name, const char *next_name, uint32_t *next_index) { return -1; }
-
-int __wrap_vpp_classify_set_interface_l2_tables(const char *hwif_name, uint32_t ip4_table_index,
-        uint32_t ip6_table_index, uint32_t other_table_index, bool is_input) { return 0; }
-
-}
 
 TEST(SwitchVpp, getLagMemberEgressDisableAction)
 {
@@ -182,12 +46,14 @@ class SwitchVppSubIfAdminState : public ::testing::Test
 
         void SetUp() override
         {
+            vppMock().reset();
             auto sc = std::make_shared<SwitchConfig>(0, "");
 
             sc->m_saiSwitchType = SAI_SWITCH_TYPE_NPU;
             sc->m_switchType = SAI_VS_SWITCH_TYPE_VPP;
             sc->m_bootType = SAI_VS_BOOT_TYPE_COLD;
-            sc->m_useTapDevice = true;
+            sc->m_useTapDevice = false;
+            sc->m_profileMap[SAI_KEY_VS_PORT_CONFIG_FILE] = "/dev/null";
             sc->m_laneMap = LaneMap::getDefaultLaneMap(0);
             sc->m_eventQueue = std::make_shared<EventQueue>(std::make_shared<Signal>());
 
@@ -196,7 +62,9 @@ class SwitchVppSubIfAdminState : public ::testing::Test
             scc->insert(sc);
 
             m_mgr = std::make_shared<RealObjectIdManager>(0, scc);
-            m_sw = std::make_shared<SwitchVpp>(m_switchId, m_mgr, sc);
+            m_sw = std::make_shared<TestableSwitchVpp>(m_switchId, m_mgr, sc);
+
+            sc->m_useTapDevice = true;
 
             m_vlan = m_mgr->allocateNewObjectId(SAI_OBJECT_TYPE_VLAN, m_switchId);
 
@@ -211,12 +79,14 @@ class SwitchVppSubIfAdminState : public ::testing::Test
             addPort(PORT_HWIF, "Ethernet4", m_port, m_bridgePort);
             addPort(OTHER_PORT_HWIF, "Ethernet40", m_otherPort, m_otherBridgePort);
 
-            g_vppCalls.clear();
-            g_vppAdminUp.clear();
+            vppMock().calls.clear();
+            vppMock().adminUp.clear();
+            vppMock().interfaces.clear();
         }
 
         void TearDown() override
         {
+            m_sw->m_switchConfig->m_useTapDevice = false;
             m_sw.reset();
         }
 
@@ -339,19 +209,19 @@ TEST_F(SwitchVppSubIfAdminState, TaggedMemberAddedWhileThePortIsDownComesUpWithT
 {
     addTaggedMember(m_bridgePort);
 
-    auto calls = vppCallsTo("interface_set_state", MEMBER_HWIF);
+    auto calls = vppMock().callsTo("interface_set_state", MEMBER_HWIF);
 
     ASSERT_EQ(1u, calls.size());
     EXPECT_TRUE(calls[0].flag);
     EXPECT_NE(0u, calls[0].sub_id);
-    EXPECT_FALSE(vppAdminUp(MEMBER_HWIF));
+    EXPECT_FALSE(vppMock().isAdminUp(MEMBER_HWIF));
 
     setPortAdminState(m_port, true);
 
-    EXPECT_TRUE(vppAdminUp(PORT_HWIF));
-    EXPECT_TRUE(vppAdminUp(MEMBER_HWIF));
+    EXPECT_TRUE(vppMock().isAdminUp(PORT_HWIF));
+    EXPECT_TRUE(vppMock().isAdminUp(MEMBER_HWIF));
 
-    calls = vppCallsTo("interface_set_state", MEMBER_HWIF);
+    calls = vppMock().callsTo("interface_set_state", MEMBER_HWIF);
 
     ASSERT_EQ(2u, calls.size());
     EXPECT_TRUE(calls[1].flag);
@@ -361,7 +231,7 @@ TEST_F(SwitchVppSubIfAdminState, TaggedMemberAddedWhileThePortIsDownComesUpWithT
     setPortAdminState(m_port, false);
     setPortAdminState(m_port, true);
 
-    EXPECT_EQ(2u, vppCallsTo("interface_set_state", MEMBER_HWIF).size());
+    EXPECT_EQ(2u, vppMock().callsTo("interface_set_state", MEMBER_HWIF).size());
 }
 
 TEST_F(SwitchVppSubIfAdminState, TaggedMemberAddedWhileThePortIsUpIsSetUpOnce)
@@ -370,37 +240,37 @@ TEST_F(SwitchVppSubIfAdminState, TaggedMemberAddedWhileThePortIsUpIsSetUpOnce)
 
     addTaggedMember(m_bridgePort);
 
-    auto calls = vppCallsTo("interface_set_state", MEMBER_HWIF);
+    auto calls = vppMock().callsTo("interface_set_state", MEMBER_HWIF);
 
     ASSERT_EQ(1u, calls.size());
     EXPECT_TRUE(calls[0].flag);
     EXPECT_EQ(0u, calls[0].sub_id);
-    EXPECT_TRUE(vppAdminUp(MEMBER_HWIF));
+    EXPECT_TRUE(vppMock().isAdminUp(MEMBER_HWIF));
 
     // VPP keeps the sub-interface admin up across a port flap on its own
     setPortAdminState(m_port, false);
     setPortAdminState(m_port, true);
 
-    EXPECT_EQ(1u, vppCallsTo("interface_set_state", MEMBER_HWIF).size());
-    EXPECT_TRUE(vppAdminUp(MEMBER_HWIF));
+    EXPECT_EQ(1u, vppMock().callsTo("interface_set_state", MEMBER_HWIF).size());
+    EXPECT_TRUE(vppMock().isAdminUp(MEMBER_HWIF));
 }
 
 TEST_F(SwitchVppSubIfAdminState, TaggedMemberRemovedBeforeThePortComesUpIsNotSetUp)
 {
     auto member = addTaggedMember(m_bridgePort);
 
-    EXPECT_FALSE(vppAdminUp(MEMBER_HWIF));
+    EXPECT_FALSE(vppMock().isAdminUp(MEMBER_HWIF));
 
     EXPECT_EQ(SAI_STATUS_SUCCESS, m_sw->removeVlanMember(member));
 
-    ASSERT_EQ(1u, vppCallsTo("delete_sub_interface", PORT_HWIF).size());
+    ASSERT_EQ(1u, vppMock().callsTo("delete_sub_interface", PORT_HWIF).size());
 
-    g_vppCalls.clear();
+    vppMock().calls.clear();
 
     setPortAdminState(m_port, true);
 
-    EXPECT_TRUE(vppAdminUp(PORT_HWIF));
-    EXPECT_TRUE(vppCallsTo("interface_set_state", MEMBER_HWIF).empty());
+    EXPECT_TRUE(vppMock().isAdminUp(PORT_HWIF));
+    EXPECT_TRUE(vppMock().callsTo("interface_set_state", MEMBER_HWIF).empty());
 }
 
 /*
@@ -414,13 +284,13 @@ TEST_F(SwitchVppSubIfAdminState, OnlyThePortThatComesUpBringsItsMembersUp)
 
     setPortAdminState(m_port, true);
 
-    EXPECT_TRUE(vppAdminUp(MEMBER_HWIF));
-    EXPECT_FALSE(vppAdminUp(OTHER_MEMBER_HWIF));
-    EXPECT_EQ(1u, vppCallsTo("interface_set_state", OTHER_MEMBER_HWIF).size());
+    EXPECT_TRUE(vppMock().isAdminUp(MEMBER_HWIF));
+    EXPECT_FALSE(vppMock().isAdminUp(OTHER_MEMBER_HWIF));
+    EXPECT_EQ(1u, vppMock().callsTo("interface_set_state", OTHER_MEMBER_HWIF).size());
 
     setPortAdminState(m_otherPort, true);
 
-    EXPECT_TRUE(vppAdminUp(OTHER_MEMBER_HWIF));
+    EXPECT_TRUE(vppMock().isAdminUp(OTHER_MEMBER_HWIF));
 }
 
 /*
@@ -431,11 +301,11 @@ TEST_F(SwitchVppSubIfAdminState, SubPortSetUpWhileThePortIsDownComesUpWithThePor
 {
     setSubPortAdminState(true);
 
-    EXPECT_FALSE(vppAdminUp(SUB_PORT_HWIF));
+    EXPECT_FALSE(vppMock().isAdminUp(SUB_PORT_HWIF));
 
     setPortAdminState(m_port, true);
 
-    EXPECT_TRUE(vppAdminUp(SUB_PORT_HWIF));
+    EXPECT_TRUE(vppMock().isAdminUp(SUB_PORT_HWIF));
 }
 
 TEST_F(SwitchVppSubIfAdminState, SubPortSetDownBeforeThePortComesUpStaysDown)
@@ -443,7 +313,7 @@ TEST_F(SwitchVppSubIfAdminState, SubPortSetDownBeforeThePortComesUpStaysDown)
     setSubPortAdminState(true);
     setSubPortAdminState(false);
 
-    auto calls = vppCallsTo("interface_set_state", SUB_PORT_HWIF);
+    auto calls = vppMock().callsTo("interface_set_state", SUB_PORT_HWIF);
 
     ASSERT_EQ(2u, calls.size());
     EXPECT_FALSE(calls[1].flag);
@@ -451,6 +321,6 @@ TEST_F(SwitchVppSubIfAdminState, SubPortSetDownBeforeThePortComesUpStaysDown)
 
     setPortAdminState(m_port, true);
 
-    EXPECT_EQ(2u, vppCallsTo("interface_set_state", SUB_PORT_HWIF).size());
-    EXPECT_FALSE(vppAdminUp(SUB_PORT_HWIF));
+    EXPECT_EQ(2u, vppMock().callsTo("interface_set_state", SUB_PORT_HWIF).size());
+    EXPECT_FALSE(vppMock().isAdminUp(SUB_PORT_HWIF));
 }
