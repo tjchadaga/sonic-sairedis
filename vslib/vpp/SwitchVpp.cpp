@@ -55,6 +55,7 @@ SwitchVpp::SwitchVpp(
     SwitchStateBase(switch_id, manager, config),
     m_object_db(this),
     m_tunnel_mgr(this),
+    m_pbh(this),
     m_tunnel_mgr_srv6(this),
     m_tunnel_mgr_ipip(this)
 {
@@ -73,6 +74,7 @@ SwitchVpp::SwitchVpp(
     SwitchStateBase(switch_id, manager, config, warmBootState),
     m_object_db(this),
     m_tunnel_mgr(this),
+    m_pbh(this),
     m_tunnel_mgr_srv6(this),
     m_tunnel_mgr_ipip(this)
 {
@@ -1591,6 +1593,13 @@ sai_status_t SwitchVpp::create(
         return createAclGrpMbr(object_id, switch_id, attr_count, attr_list);
     }
 
+    if (object_type == SAI_OBJECT_TYPE_HASH)
+    {
+        sai_object_id_t object_id;
+        sai_deserialize_object_id(serializedObjectId, object_id);
+        return m_pbh.createHash(object_id, switch_id, attr_count, attr_list);
+    }
+
     if(object_type == SAI_OBJECT_TYPE_SAMPLEPACKET)
     {
         sai_object_id_t object_id;
@@ -2133,6 +2142,11 @@ sai_status_t SwitchVpp::remove(
         return removeAclGrp(serializedObjectId);
     }
 
+    if (object_type == SAI_OBJECT_TYPE_HASH)
+    {
+        return m_pbh.removeHash(serializedObjectId);
+    }
+
     if (object_type == SAI_OBJECT_TYPE_MACSEC_PORT)
     {
         sai_object_id_t objectId;
@@ -2331,6 +2345,86 @@ sai_status_t SwitchVpp::setLag(
     return set_internal(SAI_OBJECT_TYPE_LAG, sid, lagAttr);
 }
 
+sai_status_t SwitchVpp::backupAttr(
+        _In_ sai_object_type_t objectType,
+        _In_ const std::string &serializedObjectId,
+        _In_ sai_attr_id_t attrId,
+        _Out_ SaiAttrBackup &backup)
+{
+    SWSS_LOG_ENTER();
+
+    auto meta = sai_metadata_get_attr_metadata(objectType, attrId);
+
+    if (meta == nullptr)
+    {
+        SWSS_LOG_ERROR("attribute %u unknown on %s",
+                attrId,
+                sai_serialize_object_type(objectType).c_str());
+
+        return SAI_STATUS_FAILURE;
+    }
+
+    auto type_it = m_objectHash.find(objectType);
+
+    if (type_it == m_objectHash.end() ||
+        type_it->second.find(serializedObjectId) == type_it->second.end())
+    {
+        SWSS_LOG_ERROR("not found %s:%s",
+                sai_serialize_object_type(objectType).c_str(),
+                serializedObjectId.c_str());
+
+        return SAI_STATUS_ITEM_NOT_FOUND;
+    }
+
+    auto& attrHash = type_it->second.at(serializedObjectId);
+    auto attr_it = attrHash.find(meta->attridname);
+
+    backup.m_objectType = objectType;
+    backup.m_serializedObjectId = serializedObjectId;
+    backup.m_meta = meta;
+    backup.m_value = (attr_it == attrHash.end()) ? nullptr : attr_it->second;
+
+    return SAI_STATUS_SUCCESS;
+}
+
+sai_status_t SwitchVpp::restoreAttr(
+        _In_ const SaiAttrBackup &backup)
+{
+    SWSS_LOG_ENTER();
+
+    if (backup.m_meta == nullptr)
+    {
+        SWSS_LOG_ERROR("attribute backup is empty, nothing to restore");
+
+        return SAI_STATUS_FAILURE;
+    }
+
+    auto type_it = m_objectHash.find(backup.m_objectType);
+
+    if (type_it == m_objectHash.end() ||
+        type_it->second.find(backup.m_serializedObjectId) == type_it->second.end())
+    {
+        SWSS_LOG_ERROR("not found %s:%s",
+                sai_serialize_object_type(backup.m_objectType).c_str(),
+                backup.m_serializedObjectId.c_str());
+
+        return SAI_STATUS_ITEM_NOT_FOUND;
+    }
+
+    auto& attrHash = type_it->second.at(backup.m_serializedObjectId);
+
+    if (backup.m_value)
+    {
+        attrHash[backup.m_meta->attridname] = backup.m_value;
+    }
+    else
+    {
+        attrHash.erase(backup.m_meta->attridname);
+    }
+
+    return SAI_STATUS_SUCCESS;
+}
+
 sai_status_t SwitchVpp::setAclEntry(
         _In_ sai_object_id_t entry_id,
         _In_ const sai_attribute_t* attr)
@@ -2344,8 +2438,6 @@ sai_status_t SwitchVpp::setAclEntry(
 
     auto sid = sai_serialize_object_id(entry_id);
 
-    set_internal(SAI_OBJECT_TYPE_ACL_ENTRY, sid, attr);
-
     sai_object_id_t tbl_oid;
 
     if (getAclTableId(entry_id, &tbl_oid) != SAI_STATUS_SUCCESS)
@@ -2353,7 +2445,23 @@ sai_status_t SwitchVpp::setAclEntry(
         return SAI_STATUS_FAILURE;
     }
 
+    // The rule set handed to VPP is rebuilt from the state, so the new value
+    // has to be committed before the table can be reprogrammed. Hold on to what
+    // it replaces: acl_add_replace() swaps a table's whole rule set atomically,
+    // so a rejected reprogram leaves VPP enforcing the old value and the state
+    // has to keep describing it.
+    SaiAttrBackup backup;
+
+    CHECK_STATUS(backupAttr(SAI_OBJECT_TYPE_ACL_ENTRY, sid, attr->id, backup));
+
+    CHECK_STATUS(set_internal(SAI_OBJECT_TYPE_ACL_ENTRY, sid, attr));
+
     auto status = AclAddRemoveCheck(tbl_oid);
+
+    if (status != SAI_STATUS_SUCCESS)
+    {
+        restoreAttr(backup);
+    }
 
     SWSS_LOG_NOTICE("ACL entry %s set in table %s set status %d",
             sid.c_str(),
@@ -2391,6 +2499,13 @@ sai_status_t SwitchVpp::set(
         sai_object_id_t objectId;
         sai_deserialize_object_id(serializedObjectId, objectId);
         return setAclGrpMbr(objectId, attr);
+    }
+
+    if (objectType == SAI_OBJECT_TYPE_HASH)
+    {
+        sai_object_id_t objectId;
+        sai_deserialize_object_id(serializedObjectId, objectId);
+        return m_pbh.setHash(objectId, attr);
     }
 
     if (objectType == SAI_OBJECT_TYPE_ROUTE_ENTRY)
@@ -2572,6 +2687,17 @@ sai_status_t SwitchVpp::get(
         sai_object_id_t object_id;
 
         sai_deserialize_object_id(serializedObjectId, object_id);
+
+        /*
+         * PBH and ACL counters are the same SAI object type but live in
+         * different VPP stat trees, so the counter is routed by which table
+         * claimed it rather than by anything on the counter itself.
+         */
+        if (m_pbh.isPbhCounterOid(object_id))
+        {
+            return m_pbh.getEntryStats(object_id, attr_count, attr_list);
+        }
+
         return getAclEntryStats(object_id, attr_count, attr_list);
     }
 
